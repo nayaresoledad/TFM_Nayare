@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backups:/backups  # Carpeta local para las copias de seguridad
+    ports:
+      - "5433:5432"
+
+  lyrics:
+    build: ./lyrics
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - API_KEY_GENIUS=${GENIUS_TOKEN}
+    depends_on:
+      - db
+
+  monitorizacion_traffic:
+    build: ./monitorizacion
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+    depends_on:
+      - db
+
+volumes:
+  db_data:

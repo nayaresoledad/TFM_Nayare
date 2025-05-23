@@ -1,0 +1,53 @@
+version: "3.8"
+
+services:
+  get_mbid:
+    build:
+      context: .
+      dockerfile: Dockerfile.mbid
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+    command: python get_mbid.py
+
+  fetch_features:
+    build:
+      context: .
+      dockerfile: Dockerfile.features
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - MONGO_URI=mongodb://host.docker.internal:27017/
+    command: python fetch_features.py
+    depends_on:
+      - get_mbid
+
+  download_analyze_music:
+    build:
+      context: .
+      dockerfile: Dockerfile.essentia
+    environment:
+      - MONGO_URI=mongodb://host.docker.internal:27017/
+    stdin_open: true
+    tty: true
+
+  mongo_to_postgre:
+    build:
+      context: .
+      dockerfile: Dockerfile.mongo
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - MONGO_URI=mongodb://host.docker.internal:27017/
+    command: python mongo_to_postgre.py
+    depends_on:
+      - fetch_features

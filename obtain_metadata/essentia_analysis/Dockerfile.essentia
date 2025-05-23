@@ -1,0 +1,25 @@
+# Dockerfile.base
+# Dockerfile.essentia
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Instalar dependencias OS para Essentia y yt-dlp
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    build-essential \
+    libfftw3-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    python3-dev \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Instalar Essentia (usaremos pip para la versión con bindings)
+RUN pip install essentia yt-dlp
+
+COPY . .
+
+CMD ["python", "download_analyze_music.py"]
+

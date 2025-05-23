@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  vector_audio:
+    build:
+      context: .
+      dockerfile: Dockerfile.vector_audio
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - ESSENTIA_MODEL_PATH=/app/essentia-models
+    volumes:
+      - ./essentia-models:/app/essentia-models
+      - ./cookies.txt:/app/cookies.txt
+    stdin_open: true
+    tty: true
+
+  vector_lyrics:
+    build:
+      context: .
+      dockerfile: Dockerfile.vector_lyric
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - vector_audio
+    stdin_open: true
+    tty: true
+
+  migrate_qdrant:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate_to_qdrant
+    environment:
+      - PGHOST=host.docker.internal
+      - PGPORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=artistas
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+    depends_on:
+      - vector_audio
+      - vector_lyrics
