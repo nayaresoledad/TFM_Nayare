@@ -8,8 +8,10 @@ from common.logging import setup_logging
 from common.db import DatabaseManager
 from common.progress import ProgressManager, ProgressType
 from common.retry import retry
-from .genius import buscar_cancion
-from .rasca_genio import obtener_letra
+import requests
+
+# Usamos un MCP para obtener y guardar letras en lugar de Genius
+MCP_URL = os.getenv('MCP_LETTERS_URL', 'http://localhost:8000/fetch_and_save')
 
 logger = setup_logging()
 db_manager = DatabaseManager(config.database_url, min_conn=1, max_conn=5)
@@ -86,27 +88,32 @@ def obtener_datos_y_guardar():
         if last_artista_id and artista_id < last_artista_id:
             continue
 
-        logger.info(f'Buscando: {artista} - {cancion}')
+        logger.info(f'Buscando via MCP: {artista} - {cancion}')
+        letra = None
+        song_id = None
         try:
-            song_url, song_id = buscar_cancion(artista, cancion)
+            resp = requests.post(MCP_URL, json={
+                'id_artista': artista_id,
+                'id_cancion': cancion,  # passing name in id field if id unknown to MCP
+                'artista': artista,
+                'cancion': cancion
+            }, timeout=15)
+            if resp.ok:
+                payload = resp.json()
+                letra = payload.get('letra')
+                song_id = payload.get('id_cancion')
+            else:
+                logger.warning(f"MCP no encontró letra: {resp.status_code} {resp.text}")
         except Exception:
-            logger.exception(f"Error buscando canción en Genius para {artista} - {cancion}")
-            song_url, song_id = (None, None)
+            logger.exception(f"Error calling MCP for {artista} - {cancion}")
 
-        if song_url and song_id:
-            try:
-                letra = obtener_letra(song_url)
-            except Exception:
-                logger.exception(f"Error obteniendo letra para {song_url}")
-                letra = None
+        try:
+            mbid = obtener_mbid_en_musicbrainz(artista, cancion)
+        except Exception:
+            logger.exception(f"Error obteniendo MBID para {artista} - {cancion}")
+            mbid = None
 
-            try:
-                mbid = obtener_mbid_en_musicbrainz(artista, cancion)
-            except Exception:
-                logger.exception(f"Error obteniendo MBID para {artista} - {cancion}")
-                mbid = None
-
-                datos.append([artista_id, artista, cancion, song_id, mbid, letra, fecha_guardado])
+        datos.append([artista_id, artista, cancion, song_id, mbid, letra, datetime.now()])
 
         if datos:
             guardar_en_db(datos)

@@ -148,20 +148,33 @@ End-to-end extraction flow:
 ### 6. Data Validation (20 tests)
 Format and constraint validation:
 - Artist name format
+
+## CI / CD
+
+- The repository contains a GitHub Actions workflow at `.github/workflows/ci.yml` which builds and runs the `tests` service via Docker Compose on pushes and PRs to the `main` and `dev` branches.
+- The workflow uses environment variables for `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` and `GENIUS_API_KEY`. For production/real runs, configure these as repository secrets (see next section).
+
+### Repository secrets
+
+- Add the following Repository Secrets in GitHub (Settings → Secrets):
+    - `POSTGRES_PASSWORD` — password used by the test Postgres instance (workflow provides a default test value).
+    - `GENIUS_API_KEY` — Genius API key (use a dummy value for tests or a real key for integration tests).
+- Optionally add Docker registry credentials if you plan to push images to Docker Hub; the provided publish workflow uses GitHub Container Registry (GHCR) and `GITHUB_TOKEN`.
+
+### Publish images (optional)
+
+- There is an optional publish workflow at `.github/workflows/publish.yml`. It builds and pushes an example image (tests image) to GHCR. It can be triggered automatically on push to `main` or manually via `workflow_dispatch` in the Actions UI.
+- The publish workflow uses the default `GITHUB_TOKEN` to authenticate to GHCR; no extra secret is required for GHCR pushes if permissions are allowed. For Docker Hub pushes, add `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` as secrets and adapt the workflow.
+
+If you want, I can:
+- update the publish workflow to push additional service images (e.g., the streamlit app or extractor images), or
+- add a GitHub Actions job to run integration tests against a full compose stack (including Qdrant). Which option do you prefer?
 - MBID UUID format
 - Empty field detection
 - Type checking
 - Uniqueness constraints
 - Foreign key validity
 
-## 🚀 Running Tests
-
-### Run all tests
-```bash
-docker compose up tests
-```
-
-### Run specific test file
 ```bash
 docker compose run tests pytest tests/test_extraction_services.py -v
 ```
