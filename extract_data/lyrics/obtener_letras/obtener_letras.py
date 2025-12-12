@@ -8,8 +8,8 @@ from common.logging import setup_logging
 from common.db import DatabaseManager
 from common.progress import ProgressManager, ProgressType
 from common.retry import retry
-from genius import buscar_cancion
-from rasca_genio import obtener_letra
+from .genius import buscar_cancion
+from .rasca_genio import obtener_letra
 
 logger = setup_logging()
 db_manager = DatabaseManager(config.database_url, min_conn=1, max_conn=5)
