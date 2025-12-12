@@ -1,12 +1,12 @@
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 from logging.handlers import RotatingFileHandler
 
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         log_data = {
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(UTC).isoformat() + 'Z',
             'level': record.levelname,
             'module': record.module,
             'funcName': record.funcName,
