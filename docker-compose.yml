@@ -55,8 +55,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
     command: pytest -q
 
 volumes:
