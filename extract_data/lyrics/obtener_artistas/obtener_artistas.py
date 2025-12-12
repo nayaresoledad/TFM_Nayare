@@ -1,160 +1,114 @@
 import requests
 import time
 import os
-import psycopg2
 from datetime import datetime
 
-# Cargar variables de entorno
-POSTGRES_USER = os.getenv("POSTGRES_USER")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-POSTGRES_DB = 'artistas'
+from common.config import config
+from common.logging import setup_logging
+from common.db import DatabaseManager
+from common.progress import ProgressManager, ProgressType
+from common.retry import retry
 
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@db:5432/{POSTGRES_DB}"
+logger = setup_logging()
+db_manager = DatabaseManager(config.database_url, min_conn=1, max_conn=5)
+progress_manager = ProgressManager(db_manager)
 
-QUERY_BUSQUEDA = "a"  # Puedes cambiarlo para buscar con otra letra
+QUERY_BUSQUEDA = os.getenv('QUERY_BUSQUEDA', 'a')
 
-# ==========================
-# Funciones para la base de datos
-# ==========================
-def conectar_db():
-    """Conectar a la base de datos PostgreSQL."""
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
 
 def crear_tabla_artistas():
-    """Crea la tabla de artistas en PostgreSQL si no existe."""
-    conn = conectar_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS artistas (
-            id SERIAL PRIMARY KEY,
-            nombre TEXT UNIQUE,
-            fecha_guardado TIMESTAMP,
-            query TEXT
-        )
-    """)
-    # Tabla de progreso
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS progreso_artistas (
-            query TEXT PRIMARY KEY,
-            progress INTEGER DEFAULT 0
-        )
-    """)
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS artistas (
+                id SERIAL PRIMARY KEY,
+                nombre TEXT UNIQUE,
+                fecha_guardado TIMESTAMP,
+                query TEXT
+            )
+        """)
+        cur.close()
 
-    conn.commit()
-    conn.close()
 
-def artista_existe(conn, nombre):
-    """Verifica si un artista ya está en la base de datos."""
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM artistas WHERE nombre = %s", (nombre,))
-    return cursor.fetchone() is not None
+def artista_existe(nombre: str) -> bool:
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM artistas WHERE nombre = %s", (nombre,))
+        exists = cur.fetchone() is not None
+        cur.close()
+        return exists
 
-def guardar_artista_db(conn, nombre, query):
-    """Guarda un artista en la base de datos si no existe y lo escribe en el backup."""
-    if not artista_existe(conn, nombre):
-        cursor = conn.cursor()
-        fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # Fecha y hora actuales
-        cursor.execute("INSERT INTO artistas (nombre, fecha_guardado, query) VALUES (%s, %s, %s)", 
-                       (nombre, fecha_actual, query))
-        conn.commit()
 
-# ==========================
-# Funciones para manejar el offset
-# ==========================
+def guardar_artista_db(nombre: str, query: str):
+    if not artista_existe(nombre):
+        with db_manager.get_connection() as conn:
+            cur = conn.cursor()
+            fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("INSERT INTO artistas (nombre, fecha_guardado, query) VALUES (%s, %s, %s)",
+                        (nombre, fecha_actual, query))
+            cur.close()
+
+
 def obtener_offset():
-    """Obtiene el offset de la base de datos para la query actual."""
-    conn = conectar_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT progress FROM progreso_artistas WHERE query = %s", (QUERY_BUSQUEDA,))
-    resultado = cursor.fetchone()
-    
-    conn.close()
-    
-    return resultado[0] if resultado else 0  # Si no hay registro, empezamos en 0
+    p = progress_manager.get_progress(ProgressType.ARTISTAS)
+    return p.get('current_offset', 0)
 
-def guardar_offset(offset):
-    """Guarda el offset en la base de datos."""
-    conn = conectar_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        INSERT INTO progreso_artistas (query, progress)
-        VALUES (%s, %s)
-        ON CONFLICT (query) DO UPDATE
-        SET progress = EXCLUDED.progress
-    """, (QUERY_BUSQUEDA, offset))
-    
-    conn.commit()
-    conn.close()
-# ==========================
-# Función principal
-# ==========================
+
+def guardar_offset(offset: int):
+    progress_manager.update_progress(ProgressType.ARTISTAS, offset)
+
+
+@retry(max_attempts=4, initial_delay=1, backoff=2, exceptions=(Exception,))
+def buscar_artistas_musicbrainz(query: str, offset: int, limit: int = 100):
+    url = 'https://musicbrainz.org/ws/2/artist/'
+    params = {'query': query, 'limit': limit, 'offset': offset, 'fmt': 'json'}
+    headers = {'User-Agent': 'Lyrics/1.0 (contact@example.com)'}
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return [a.get('name') for a in data.get('artists', [])]
+    except Exception as e:
+        logger.warning(f"Error fetching artists: {e}")
+        return []
+
+
 def obtener_artistas_musicbrainz():
     crear_tabla_artistas()
-    url = 'https://musicbrainz.org/ws/2/artist/'
-    print('Obteniendo offset')
     offset = obtener_offset()
     limit = 100
-    print('Conectando db...')
-    conn = conectar_db()  # Conectar a la base de datos
-    print('db conectada!')
 
-    try:
-        while True:
-            params = {
-                'query': QUERY_BUSQUEDA,  # Usamos la query definida arriba
-                'limit': limit,
-                'offset': offset,
-                'fmt': 'json'
-            }
-            headers = {
-                'User-Agent': 'Lyrics/1.0 (olealpaca@gmail.com)'  # Usa tu app y contacto real aquí
-            }
+    logger.info(f"Comenzando búsqueda de artistas con query='{QUERY_BUSQUEDA}' desde offset {offset}")
 
+    while True:
+        artistas = buscar_artistas_musicbrainz(QUERY_BUSQUEDA, offset, limit)
+
+        if not artistas:
+            logger.info("No se encontraron más artistas o hubo un error.")
+            break
+
+        nuevos = 0
+        for nombre in artistas:
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-                response.raise_for_status()  # Lanza error si la respuesta no es 200 OK
-                data = response.json()
+                if not artista_existe(nombre):
+                    guardar_artista_db(nombre, QUERY_BUSQUEDA)
+                    nuevos += 1
+            except Exception:
+                logger.exception(f"Error guardando artista: {nombre}")
 
-                if 'artists' not in data:
-                    print("No se encontraron más artistas o hubo un error.")
-                    break
+        logger.info(f"Se guardaron {nuevos} artistas nuevos.")
 
-                artistas = [artist['name'] for artist in data['artists']]
-                
-                nuevos = 0
-                for artista in artistas:
-                    if not artista_existe(conn, artista):
-                        guardar_artista_db(conn, artista, QUERY_BUSQUEDA)
-                        nuevos += 1
-
-                print(f"Se guardaron {nuevos} artistas nuevos en la base de datos y el backup.")
-
-                # Actualizar y guardar el offset
-                offset += len(artistas)
-                guardar_offset(offset)
-
-                # Si la cantidad de artistas obtenidos es menor que el límite, no hay más páginas
-                if len(artistas) < limit:
-                    break
-
-                # Evitar que la API bloquee por demasiadas solicitudes
-                time.sleep(1)
-
-            except requests.exceptions.RequestException as e:
-                print(f"Error en la solicitud: {e}. Esperando 5 segundos antes de reintentar...")
-                time.sleep(5)  # Esperar antes de reintentar
-
-    except KeyboardInterrupt:
-        print("\nInterrupción manual detectada. Guardando estado y cerrando conexión...")
+        offset += len(artistas)
         guardar_offset(offset)
 
-    finally:
-        conn.close()
-        print("Base de datos cerrada. Proceso finalizado.")
+        if len(artistas) < limit:
+            break
 
-# Ejecutar la obtención de artistas
-obtener_artistas_musicbrainz()
+        time.sleep(1)
+
+    logger.info("Proceso de obtención de artistas finalizado.")
+
+
+if __name__ == '__main__':
+    obtener_artistas_musicbrainz()
 

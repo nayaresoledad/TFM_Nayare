@@ -1,172 +1,121 @@
-import requests
-import psycopg2
 import os
+import time
+import requests
 from datetime import datetime
+
+from common.config import config
+from common.logging import setup_logging
+from common.db import DatabaseManager
+from common.progress import ProgressManager, ProgressType
+from common.retry import retry
 from genius import buscar_cancion
 from rasca_genio import obtener_letra
 
-POSTGRES_USER = os.getenv("POSTGRES_USER")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-POSTGRES_DB = 'artistas'
-API_KEY_GENIUS = os.getenv("API_KEY_GENIUS")
+logger = setup_logging()
+db_manager = DatabaseManager(config.database_url, min_conn=1, max_conn=5)
+progress_manager = ProgressManager(db_manager)
 
-DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@db:5432/{POSTGRES_DB}"
 
-# Función para obtener el MBID de MusicBrainz
+@retry(max_attempts=4, initial_delay=1, backoff=2, exceptions=(Exception,))
 def obtener_mbid_en_musicbrainz(artista, cancion):
     search_url = f'https://musicbrainz.org/ws/2/recording/'
     params = {'query': f'artist:{artista} recording:{cancion}', 'fmt': 'json'}
-    
-    response = requests.get(search_url, params=params)
-    data = response.json()
-    
+    r = requests.get(search_url, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
     if 'recordings' in data and data['recordings']:
-        mbid = data['recordings'][0]['id']
-        return mbid
-    else:
-        return None
+        return data['recordings'][0].get('id')
+    return None
 
-# Función para obtener los artistas y canciones desde la base de datos
-def conectar_db():
-    """Conectar a la base de datos PostgreSQL."""
-    conn = psycopg2.connect(DATABASE_URL)
-    return conn
 
 def obtener_artistas_y_canciones():
-    conn = conectar_db()
-    cursor = conn.cursor()
-    # Obtenemos los artistas y las canciones en orden
-    cursor.execute('SELECT id_artista, artista, cancion FROM canciones ORDER BY id_artista, id')
-    artistas_canciones = cursor.fetchall()
-    
-    conn.close()
-    
-    return artistas_canciones
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT id_artista, artista, cancion FROM canciones ORDER BY id_artista, id')
+        rows = cur.fetchall()
+        cur.close()
+        return rows
 
-# Función para obtener el progreso y continuar desde el último punto
+
 def obtener_progreso():
-    conn = conectar_db()
-    cursor = conn.cursor()
-    
-    # Crear la tabla de progreso si no existe
-    cursor.execute('''CREATE TABLE IF NOT EXISTS progreso_actual_cancion (
-        id SERIAL PRIMARY KEY,
-        id_artista INTEGER,
-        id_cancion INTEGER
-    );
-    ''')
-    
-    # Obtener el último progreso guardado
-    cursor.execute('SELECT id_artista, id_cancion FROM progreso_actual_cancion ORDER BY id_artista DESC, id_cancion DESC LIMIT 1')
-    progreso = cursor.fetchone()
-    
-    conn.close()
-    
-    return progreso
+    p = progress_manager.get_progress(ProgressType.LETRAS)
+    # Devolver tupla (id_artista, id_cancion) si existe
+    return (p.get('last_processed_id'), 0) if p.get('last_processed_id') else None
 
-# Función para guardar el progreso
+
 def guardar_progreso(id_artista, id_cancion):
-    conn = conectar_db()
-    cursor = conn.cursor()
+    # Guardamos last_processed_id como id_artista (simplificado)
+    progress_manager.update_progress(ProgressType.LETRAS, id_artista, last_processed_id=id_artista)
 
-    # Crear la tabla si no existe
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS progreso_actual_cancion (
-            id SERIAL PRIMARY KEY,
-            id_artista INTEGER NOT NULL,
-            id_cancion INTEGER NOT NULL
-        );
-    ''')
 
-    # Insertar el progreso
-    cursor.execute('''
-        INSERT INTO progreso_actual_cancion (id_artista, id_cancion) VALUES (%s, %s)
-    ''', (id_artista, id_cancion))
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# Función para guardar los resultados en la tabla 'canciones_resultado'
 def guardar_en_db(datos):
-    conn = conectar_db()
-    cursor = conn.cursor()
+    with db_manager.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS canciones_resultado (
+                id SERIAL PRIMARY KEY,
+                id_artista INTEGER NOT NULL,
+                artista TEXT NOT NULL,
+                cancion TEXT NOT NULL,
+                id_cancion INTEGER NOT NULL,
+                mbid TEXT,
+                letra TEXT,
+                fecha_guardado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        cur.executemany('''
+            INSERT INTO canciones_resultado (id_artista, artista, cancion, id_cancion, mbid, letra, fecha_guardado)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ''', datos)
+        cur.close()
 
-    # Crear la tabla si no existe
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS canciones_resultado (
-            id SERIAL PRIMARY KEY,
-            id_artista INTEGER NOT NULL,
-            artista TEXT NOT NULL,
-            cancion TEXT NOT NULL,
-            id_cancion INTEGER NOT NULL,
-            mbid TEXT,
-            letra TEXT,
-            fecha_guardado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-    ''')
 
-    # Insertar los datos en la base de datos
-    cursor.executemany('''
-        INSERT INTO canciones_resultado (id_artista, artista, cancion, id_cancion, mbid, letra, fecha_guardado)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-    ''', datos)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-# Función para obtener los datos y guardarlos
 def obtener_datos_y_guardar():
-    # Verificamos el progreso para continuar desde el último punto
     progreso = obtener_progreso()
-    
-    if progreso:
-        # Continuamos desde el último artista y canción procesados
-        last_artista_id, last_cancion_id = progreso
-        print(f"Continuando desde el artista ID: {last_artista_id} y la canción ID: {last_cancion_id}")
-    else:
-        print("Comenzando desde el inicio.")
-        last_artista_id, last_cancion_id = None, None
+    last_artista_id = progreso[0] if progreso else None
 
-    # Obtenemos los artistas y canciones desde la base de datos
+    if last_artista_id:
+        logger.info(f"Continuando desde el artista ID: {last_artista_id}")
+    else:
+        logger.info("Comenzando desde el inicio.")
+
     artistas_canciones = obtener_artistas_y_canciones()
-    
-    # Lista para almacenar los resultados
     datos = []
-    
-    # Iterar sobre los artistas y canciones
+
     for artista_id, artista, cancion in artistas_canciones:
-        if last_artista_id and (artista_id < last_artista_id or (artista_id == last_artista_id and cancion < last_cancion_id)):
-            # Si ya hemos procesado este artista y canción, lo saltamos
+        if last_artista_id and artista_id < last_artista_id:
             continue
-        
-        print(f'Buscando: {artista} - {cancion}')
-        
-        # Obtener la URL de la canción y el ID de Genius
-        song_url, song_id = buscar_cancion(artista, cancion)
-        
+
+        logger.info(f'Buscando: {artista} - {cancion}')
+        try:
+            song_url, song_id = buscar_cancion(artista, cancion)
+        except Exception:
+            logger.exception(f"Error buscando canción en Genius para {artista} - {cancion}")
+            song_url, song_id = (None, None)
+
         if song_url and song_id:
-            # Obtener la letra de la canción
-            letra = obtener_letra(song_url)
-            
-            # Obtener el MBID de MusicBrainz
-            mbid = obtener_mbid_en_musicbrainz(artista, cancion)
-            
-            # Guardar la información si se tiene la letra y MBID
-            if letra or mbid:
-                fecha_guardado = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            try:
+                letra = obtener_letra(song_url)
+            except Exception:
+                logger.exception(f"Error obteniendo letra para {song_url}")
+                letra = None
+
+            try:
+                mbid = obtener_mbid_en_musicbrainz(artista, cancion)
+            except Exception:
+                logger.exception(f"Error obteniendo MBID para {artista} - {cancion}")
+                mbid = None
+
                 datos.append([artista_id, artista, cancion, song_id, mbid, letra, fecha_guardado])
-        
-        # Guardar los resultados en la base de datos después de cada artista/canción
+
         if datos:
             guardar_en_db(datos)
-            print(f'Guardados {len(datos)} resultados en la base de datos.')
-            datos.clear()  # Limpiar la lista de datos después de cada inserción
-        
-        # Actualizar el progreso después de cada canción procesada
-        guardar_progreso(artista_id, cancion)
+            logger.info(f'Guardados {len(datos)} resultados en la base de datos.')
+            datos.clear()
 
-# Función principal que se ejecuta
-obtener_datos_y_guardar()
+        guardar_progreso(artista_id, 0)
+
+
+if __name__ == '__main__':
+    obtener_datos_y_guardar()
 
