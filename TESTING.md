@@ -169,6 +169,37 @@ Format and constraint validation:
 If you want, I can:
 - update the publish workflow to push additional service images (e.g., the streamlit app or extractor images), or
 - add a GitHub Actions job to run integration tests against a full compose stack (including Qdrant). Which option do you prefer?
+
+## Live integration tests
+
+- The repo includes live integration tests that call external APIs and the MCP. These tests are guarded and will be skipped by default.
+- To run them in the Docker Compose environment (recommended):
+
+    1. Export your real `GENIUS_API_KEY` (if you want the Genius fallback to work):
+
+         ```bash
+         export GENIUS_API_KEY=your_real_key_here
+         export RUN_LIVE_TESTS=1
+         ```
+
+    2. Start and run tests with Docker Compose (the CI already starts the `mcp` service when running tests):
+
+         ```bash
+         docker compose build --no-cache mcp tests
+         docker compose up --abort-on-container-exit tests
+         ```
+
+- Or run locally (without Docker) after installing dev requirements; the MCP must be reachable (e.g., `uvicorn server:app --host 0.0.0.0 --port 8000`):
+
+    ```bash
+    python -m venv .venv && source .venv/bin/activate
+    pip install -r requirements-dev.txt
+    export GENIUS_API_KEY=your_real_key_here
+    export RUN_LIVE_TESTS=1
+    pytest -q -k mcp_integration
+    ```
+
+Be aware: live tests depend on external network services and can be flaky. Use them for integration validation, not as fast unit tests.
 - MBID UUID format
 - Empty field detection
 - Type checking
