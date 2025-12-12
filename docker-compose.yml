@@ -1,6 +1,10 @@
 version: '3.8'
 
 services:
+  # ============================================
+  # INFRASTRUCTURE SERVICES
+  # ============================================
+  
   postgres:
     image: postgres:15
     container_name: tfm-postgres
@@ -21,6 +25,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - tfm_network
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -33,13 +39,300 @@ services:
       QDRANT__SERVICE__PORT: 6333
       QDRANT__STORAGE__PATH: /qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6333/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    depends_on:
-      - postgres
+      test: ["CMD-SHELL", "ps aux | grep -q '[q]drant' && echo healthy"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    networks:
+      - tfm_network
 
+  # ============================================
+  # EXTRACTION SERVICES (Extract Data / Lyrics)
+  # ============================================
+  
+  obtener-artistas:
+    build:
+      context: ./extract_data/lyrics/obtener_artistas
+      dockerfile: Dockerfile
+    container_name: tfm-obtener-artistas
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python -c "from extract_data.lyrics.obtener_artistas.obtener_artistas import main; main()" || true
+
+  obtener-canciones:
+    build:
+      context: ./extract_data/lyrics/obtener_canciones
+      dockerfile: Dockerfile
+    container_name: tfm-obtener-canciones
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      obtener-artistas:
+        condition: service_started
+    command: python -c "from extract_data.lyrics.obtener_canciones.obtener_canciones import main; main()" || true
+
+  obtener-letras:
+    build:
+      context: ./extract_data/lyrics/obtener_letras
+      dockerfile: Dockerfile
+    container_name: tfm-obtener-letras
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      obtener-canciones:
+        condition: service_started
+    command: python -c "from extract_data.lyrics.obtener_letras.obtener_letras import main; main()" || true
+
+  # ============================================
+  # METADATA SERVICES (Obtain Metadata)
+  # ============================================
+  
+  get-mbid:
+    build:
+      context: ./obtain_metadata/get_mbid
+      dockerfile: Dockerfile.mbid
+    container_name: tfm-get-mbid
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python -c "from obtain_metadata.get_mbid.get_mbid import main; main()" || true
+
+  essentia-analysis:
+    build:
+      context: ./obtain_metadata/essentia_analysis
+      dockerfile: Dockerfile.essentia
+    container_name: tfm-essentia-analysis
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+      - audio_cache:/tmp/audio_cache
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python -c "from obtain_metadata.essentia_analysis.download_analyze_music import main; main()" || true
+
+  get-features:
+    build:
+      context: ./obtain_metadata/get_features
+      dockerfile: Dockerfile.features
+    container_name: tfm-get-features
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python -c "from obtain_metadata.get_features.fetch_features import main; main()" || true
+
+  mongo-to-postgres:
+    build:
+      context: ./obtain_metadata/mongo_to_postgres
+      dockerfile: Dockerfile.mongo
+    container_name: tfm-mongo-to-postgres
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: python -c "from obtain_metadata.mongo_to_postgres.parse_features_to_postgres import main; main()" || true
+
+  # ============================================
+  # VECTORIZATION SERVICES
+  # ============================================
+  
+  vectorizer-lyrics:
+    build:
+      context: ./vectors/vectorizer/lyric_vectorizer
+      dockerfile: Dockerfile.vector_lyric
+    container_name: tfm-vectorizer-lyrics
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+    volumes:
+      - .:/workspace
+      - model_cache:/root/.cache/huggingface
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      obtener-letras:
+        condition: service_started
+    command: python vectors/vectorizer/lyric_vectorizer/process_and_vectorize.py || true
+
+  vectorizer-audio:
+    build:
+      context: ./vectors/vectorizer/track_vectorizer
+      dockerfile: Dockerfile.vector_audio
+    container_name: tfm-vectorizer-audio
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+    volumes:
+      - .:/workspace
+      - model_cache:/root/.cache/huggingface
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      essentia-analysis:
+        condition: service_started
+    command: python vectors/vectorizer/track_vectorizer/process_and_vectorize.py || true
+
+  postgre-to-qdrant:
+    build:
+      context: ./vectors/postgre_to_qdrant
+      dockerfile: Dockerfile.migrate_to_qdrant
+    container_name: tfm-postgre-to-qdrant
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      vectorizer-lyrics:
+        condition: service_started
+      vectorizer-audio:
+        condition: service_started
+    command: python vectors/postgre_to_qdrant/migrate_postgre_to_qdrant.py || true
+
+  # ============================================
+  # MONITORING SERVICES
+  # ============================================
+  
+  monitorizacion:
+    build:
+      context: ./extract_data/monitorizacion
+      dockerfile: Dockerfile
+    container_name: tfm-monitorizacion
+    ports:
+      - "8080:80"
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ============================================
+  # VISUALIZATION SERVICES
+  # ============================================
+  
+  streamlit:
+    build:
+      context: ./streamlit
+      dockerfile: Dockerfile
+    container_name: tfm-streamlit
+    ports:
+      - "8501:8501"
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    networks:
+      - tfm_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    command: streamlit run streamlit/app/app.py
+
+  # ============================================
+  # TESTING SERVICES
+  # ============================================
+  
   tests:
     build:
       context: .
@@ -52,6 +345,8 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
+    networks:
+      - tfm_network
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,7 +355,9 @@ services:
 volumes:
   pgdata:
   qdrant_storage:
+  audio_cache:
+  model_cache:
 
 networks:
-  default:
-    name: tfm_network
+  tfm_network:
+    driver: bridge
