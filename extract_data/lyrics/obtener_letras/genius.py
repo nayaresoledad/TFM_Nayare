@@ -32,8 +32,10 @@ def buscar_cancion(artista, cancion):
 
     # Verificamos si se encontró la canción
     if data['response'].get('hits'):
-        song_id = song_info['id']
-        print(f'Canción encontrada: {song_info["full_title"]}')
+        song_info = data['response']['hits'][0]['result']
+        song_url = song_info.get('url')
+        song_id = song_info.get('id')
+        print(f'Canción encontrada: {song_info.get("full_title")}')
         return song_url, song_id
     else:
         print(f"No se encontró la canción '{cancion}' de {artista}")
