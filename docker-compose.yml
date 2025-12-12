@@ -40,6 +40,25 @@ services:
     depends_on:
       - postgres
 
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.tests
+    container_name: tfm-tests
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    command: pytest -q
+
 volumes:
   pgdata:
   qdrant_storage:
