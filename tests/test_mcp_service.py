@@ -1,52 +1,52 @@
 import pytest
-from unittest.mock import patch
+import asyncio
+from unittest.mock import patch, AsyncMock, MagicMock
 
 from extract_data.lyrics.mcp import server
 
 
-def test_fetch_lyrics_lyrics_ovh_success(monkeypatch):
-    # Mock requests.get for lyrics.ovh
-    class MockResp:
-        ok = True
+def test_fetch_lyrics_with_playwright_mocked(monkeypatch):
+    """Mock Playwright async functions to test fetch_lyrics_internet fallback logic."""
+    # Mock _fetch_lyrics_ovh_with_playwright to return None (simulating no lyrics found)
+    async def mock_ovh_fail(artista, cancion):
+        return None
 
-        def json(self):
-            return {'lyrics': 'La la la'}
+    # Mock _fetch_lyrics_genius_with_playwright to return lyrics
+    async def mock_genius_success(artista, cancion):
+        return "Genius lyrics found"
 
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.requests.get', lambda *a, **k: MockResp())
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_ovh_with_playwright', mock_ovh_fail)
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_genius_with_playwright', mock_genius_success)
 
     lyrics, song_id, source = server.fetch_lyrics_internet('Artist', 'Song')
-    assert lyrics == 'La la la'
+    assert lyrics == "Genius lyrics found"
+    assert source == 'genius'
+
+
+def test_fetch_lyrics_ovh_success(monkeypatch):
+    """Test that fetch_lyrics_internet returns lyrics.ovh result if successful."""
+    async def mock_ovh_success(artista, cancion):
+        return "OVH lyrics"
+
+    async def mock_genius(artista, cancion):
+        return None
+
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_ovh_with_playwright', mock_ovh_success)
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_genius_with_playwright', mock_genius)
+
+    lyrics, song_id, source = server.fetch_lyrics_internet('Artist', 'Song')
+    assert lyrics == "OVH lyrics"
     assert song_id is None
     assert source == 'lyrics.ovh'
 
 
-def test_fetch_lyrics_fallback_to_genius(monkeypatch):
-    # First call to lyrics.ovh fails
-    def fake_get(url, timeout=8):
-        class R:
-            ok = False
-
-            def json(self):
-                return {}
-
-        return R()
-
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.requests.get', fake_get)
-
-    # Mock buscar_cancion to return a URL and id
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.buscar_cancion', lambda a, c: ('http://song', 123))
-    # Mock scrape_letra to return lyrics
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.scrape_letra', lambda url: 'Scraped lyrics')
-
-    lyrics, song_id, source = server.fetch_lyrics_internet('Artist', 'Song')
-    assert lyrics == 'Scraped lyrics'
-    assert song_id == 123
-    assert source == 'genius'
-
-
 def test_fetch_lyrics_not_found(monkeypatch):
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.requests.get', lambda *a, **k: (_ for _ in ()).throw(Exception('fail')))
-    monkeypatch.setattr('extract_data.lyrics.mcp.server.buscar_cancion', lambda a, c: (None, None))
+    """Test that fetch_lyrics_internet returns None when both sources fail."""
+    async def mock_fail(artista, cancion):
+        return None
+
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_ovh_with_playwright', mock_fail)
+    monkeypatch.setattr('extract_data.lyrics.mcp.server._fetch_lyrics_genius_with_playwright', mock_fail)
 
     lyrics, song_id, source = server.fetch_lyrics_internet('Artist', 'Song')
     assert lyrics is None
