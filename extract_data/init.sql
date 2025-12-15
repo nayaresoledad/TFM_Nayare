@@ -13,8 +13,10 @@ $$;
 DO
 $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = <USER>) THEN
-    CREATE ROLE naynay WITH LOGIN ENCRYPTED PASSWORD '<PASSWORD>';
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'naynay') THEN
+    -- Password removed from repository. Set a secure password via environment
+    -- or create the role manually. Placeholder used here.
+    CREATE ROLE naynay WITH LOGIN ENCRYPTED PASSWORD '<REPLACE_WITH_SECURE_PASSWORD>';
   END IF;
 END
 $$;

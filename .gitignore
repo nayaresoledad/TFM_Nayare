@@ -1,0 +1,11 @@
+.env
+.env.example
+.pytest_cache/
+
+# Bytecode
+*.pyc
+__pycache__/
+
+# Local docker repo file
+docker-ce.repo
+tfm_app.log

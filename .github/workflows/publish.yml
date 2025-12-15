@@ -1,0 +1,72 @@
+
+name: Publish images
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push tests image to GHCR
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.tests
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.IMAGE_OWNER }}/tfm-nayare-tests:latest
+            ghcr.io/${{ env.IMAGE_OWNER }}/tfm-nayare-tests:${{ github.sha }}
+
+      - name: Build & push streamlit image to GHCR
+        uses: docker/build-push-action@v4
+        with:
+          context: ./streamlit
+          file: ./streamlit/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ env.IMAGE_OWNER }}/tfm-nayare-streamlit:latest
+            ghcr.io/${{ env.IMAGE_OWNER }}/tfm-nayare-streamlit:${{ github.sha }}
+
+      - name: Login to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME }}
+        uses: docker/login-action@v2
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push images to Docker Hub (optional)
+        if: ${{ secrets.DOCKERHUB_USERNAME }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile.tests
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/tfm-nayare-tests:latest
+            docker.io/${{ secrets.DOCKERHUB_USERNAME }}/tfm-nayare-tests:${{ github.sha }}
+
