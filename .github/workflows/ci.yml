@@ -25,6 +25,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
+      - name: Create .env file for Docker Compose
+        run: |
+          cat > .env << EOF
+          POSTGRES_USER=tfm_user
+          POSTGRES_PASSWORD=test_pass
+          POSTGRES_DB=tfm_db
+          GENIUS_API_KEY=dummy
+          EOF
+
       - name: Build services and run tests with Docker Compose
         run: |
           set -e
